@@ -112,13 +112,13 @@ export class SAML2Authenticator {
   /**
    * 用于 idp 登录回调
    */
-  async assertForLogin(httpMethod: 'POST' | 'GET', SAMLResponse: string): Promise<{ nameId: string, sessionIndex?: string }> {
+  async assertForLogin(httpMethod: 'POST' | 'GET', SAMLResponse: string): Promise<{ nameId: string, sessionIndex?: string, email?: string, attributes?: Record<string, string | string[]> }> {
     const response = await this.assert({ SAMLResponse }, httpMethod === 'POST')
     if (response.type !== 'authn_response') {
       throw new Error('no login assert')
     }
-    const { name_id: nameId, session_index: sessionIndex } = response.user
-    return { nameId, sessionIndex }
+    const { name_id: nameId, session_index: sessionIndex, attributes } = response.user
+    return { nameId, sessionIndex, email: response.user['email'], attributes }
   }
 
   /**
