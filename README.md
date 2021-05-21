@@ -1,13 +1,23 @@
 ## 概念介绍
-### AD
-AD(Active Directory)是目录服务，用于储存目录类别信息，包括账户体系、通讯录、电话簿、组织架构等等
+
+### Directory Service
+
+Directory Service 是目录服务，用于储存目录类别信息，包括账户体系、通讯录、电话簿、组织架构等等
+
 ### LDAP
-LDAP 是一种支持访问 AD 服务器的协议，提供对 AD 服务器的登陆(bind)和对 AD 储存信息的新增修改(add/modify)、查询(search)和比对(compare)等功能，常用于单点登录(SSO)
+
+LDAP 是一种支持访问目录服务器的协议，提供对 AD 服务器的登陆(bind)和对 AD 储存信息的新增修改(add/modify)、查询(search)和比对(compare)等功能，常用于组织架构同步
+
 ### OpenLDAP
+
 支持 LDAP 协议的一个开源 AD 服务器
+
 ### AD DS(named AD before Windows Server 2008)
+
 AD DS(AD Domain Service)是微软的 AD 服务器实现，它支持通过 LDAP 协议访问
+
 ### AD FS
+
 AD FS 基于 AD DS，提供身份鉴别和访问控制功能，可以提供基于 SAML2 的单点登录 SSO 功能
 
 ## 技术方案
