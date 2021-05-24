@@ -18,10 +18,10 @@
 
 
 /**
- * for Windows AD
+ * for Active Directory
  * see https://docs.microsoft.com/en-us/windows/win32/ad/polling-for-changes-using-the-dirsync-control
  */
-// async dirSyncForMSAD() {
+// async dirSyncForAD() {
 //   const LDAP_SERVER_DIRSYNC_OID = '1.2.840.113556.1.4.841'
 //   const LDAP_SERVER_EXTENDED_DN_OID = '1.2.840.113556.1.4.529'
 //   const LDAP_SERVER_SHOW_DELETED_OID = '1.2.840.113556.1.4.417'
@@ -33,15 +33,82 @@ import * as ldapjs from 'ldapjs'
 import { createClient, Error, Client } from 'ldapjs'
 import { EventEmitter } from 'events'
 
-enum SearchScope {
+export enum SearchScope {
   base = 'base',
   one = 'one',
   sub = 'sub'
 }
 
-const NotifyObjectKeys = <const>['dn', 'ou', 'cn', 'mobile', 'mail', 'name', 'objectClass', 'sAMAccountName'];
+/**
+ * see https://docs.microsoft.com/en-us/windows/win32/adschema/a-useraccountcontrol
+ */
+enum LDAPUserAccountControl {
+  attrName = 'userAccountControl',
+  ACCOUNTDISABLE = 0x00000002,
+}
 
-class MSADObjChangeNotifier extends EventEmitter {
+const LDAP_MATCHING_RULE_BIT_AND = '1.2.840.113556.1.4.803'
+
+export enum DirectoryServiceName {
+  ActiveDirectory = 'ActiveDirectory',
+  OpenLDAP = 'OpenLDAP',
+}
+
+/**
+ * see https://docs.oracle.com/cd/E26217_01/E26214/html/ldap-filters-attrs-users.html for common filters
+ */
+const SearchFilters: Record<'default' | keyof typeof DirectoryServiceName, Partial<Record<'user' | 'ou', string>>> = {
+  default: {
+    user: `(&(|(objectclass=user)(objectclass=person)(objectclass=inetOrgPerson)(objectclass=organizationalPerson))(!(objectclass=computer)))`,
+    ou: `(objectClass=organizationalUnit)`,
+  },
+  /**
+   * About Active Directory LDAP Syntax Filters,
+   * see https://social.technet.microsoft.com/wiki/contents/articles/5392.active-directory-ldap-syntax-filters.aspx#Filter_on_objectCategory_and_objectClass
+   */
+  [DirectoryServiceName.ActiveDirectory]: {
+    user: `(&(sAMAccountType=805306368)(!(${LDAPUserAccountControl.attrName}:${LDAP_MATCHING_RULE_BIT_AND}:=${LDAPUserAccountControl.ACCOUNTDISABLE})))`,
+  },
+  [DirectoryServiceName.OpenLDAP]: {
+    user: `(objectClass=person)`,
+  },
+
+}
+
+const searchAttrKeys = <const>['dn', 'ou', 'cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName', 'objectGUID'];
+type SearchObject = Partial<Record<typeof searchAttrKeys[number], string>>
+
+interface FetchObject extends SearchObject {
+  id: string
+  dn: string
+  type: 'user' | 'ou'
+}
+
+interface FetchUser extends FetchObject {
+  id: string
+  dn: string
+  type: 'user'
+  cn: string
+}
+
+interface FetchOU extends FetchObject {
+  id: string
+  dn: string
+  type: 'ou'
+  ou: string
+}
+
+interface FetchNestOU extends FetchOU {
+  users: FetchUser[]
+  childOUs: FetchNestOU[]
+}
+
+type WholeOrg = { usersNotInOU: FetchUser[], ous: FetchNestOU[] }
+
+/**
+ * for Active Directory
+ */
+class ADObjChangeNotifier extends EventEmitter {
   messageID: number
   client: Client
   stopped = false
@@ -52,7 +119,7 @@ class MSADObjChangeNotifier extends EventEmitter {
     this.client = client
   }
 
-  on(event: 'change', listener: (object: Record<typeof NotifyObjectKeys[number], string>) => void): this;
+  on(event: 'change', listener: (object: FetchObject) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
   on(event: 'end', listener: (error?: Error) => void): this;
   on(event, listener) {
@@ -81,16 +148,23 @@ class MSADObjChangeNotifier extends EventEmitter {
 export class LDAPOrgFetcher {
   client: Promise<Client>
   baseDN: string
+  dsType: DirectoryServiceName
+  searchFilter: typeof SearchFilters.default
 
   constructor({
                 url,
                 adminDN,
                 adminPassword,
                 tlsOptions,
-              }: { url: string, tlsOptions?: any, adminDN: string, adminPassword: string }) {
+                dsType = DirectoryServiceName.ActiveDirectory,
+                baseDN = '',
+              }: { url: string, adminDN: string, adminPassword: string, tlsOptions?: any, baseDN?: string, dsType?: DirectoryServiceName }) {
+    this.baseDN = baseDN
+    this.dsType = dsType
+    this.searchFilter = Object.assign(SearchFilters.default, SearchFilters[this.dsType])
     this.client = Promise.resolve().then(() => {
       const client = createClient({
-        url,
+        url: `${url}/${this.baseDN}`,
         tlsOptions,
       })
       return new Promise((res, rej) => {
@@ -106,46 +180,155 @@ export class LDAPOrgFetcher {
     })
   }
 
-  async pullOU() {
+  async release() {
+    const client = await this.client
+    return new Promise<void>((res) => {
+      client.unbind((err) => {
+        if (err) {
+          this.logError('unbind', err)
+        }
+        res()
+      })
+    })
+  }
 
+  static stringifyADGUID(guid) {
+    return Buffer.from(guid).toString('base64')
+  }
+
+  private fillId(object: FetchObject) {
+    let id
+    switch (this.dsType) {
+      case DirectoryServiceName.ActiveDirectory:
+        id = object.objectGUID
+        break
+      default:
+        id = object.dn
+    }
+    object.id = id
+  }
+
+  async fetch(filter: string, baseDN = this.baseDN, scope = SearchScope.sub): Promise<FetchObject[]> {
+    const client = await this.client
+    return new Promise((res, rej) => {
+      client.search(baseDN, {
+        scope,
+        attributes: searchAttrKeys as any,
+        filter,
+        paged: true,
+      }, (err, response) => {
+        if (err) {
+          rej(err)
+          return
+        }
+
+        const objs = []
+        response.on('searchEntry', ({ object: entryObject }) => {
+          let object = { ...entryObject } as unknown as FetchObject
+          delete object['controls']
+          if (typeof object.objectGUID === 'string') {
+            object.objectGUID = LDAPOrgFetcher.stringifyADGUID(object.objectGUID)
+          }
+          this.fillId(object)
+          objs.push(object)
+        })
+        response.on('error', (err) => {
+          this.logError('search error', err);
+        });
+        response.on('end', (result) => {
+          if (result?.status !== 0) {
+            console.error('search end', result.status, result.errorMessage)
+          }
+          res(objs)
+        });
+      })
+    })
+  }
+
+  async fetchOUs(filter: string = this.searchFilter.ou, baseDN = this.baseDN, scope = SearchScope.sub) {
+    return (await this.fetch(filter, baseDN, scope)) as FetchOU[]
+  }
+
+  async fetchUsers(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
+    return (await this.fetch(filter, baseDN, scope)) as FetchUser[]
   }
 
   /**
-   * 从 Microsoft AD 接收对象更新通知
+   * 获取完整的组织架构树，包括各级 ou 和 user
+   */
+  async fetchWholeOrg({
+                        userFilter = this.searchFilter.user,
+                        ouFilter = this.searchFilter.ou,
+                      } = {}, baseDN = this.baseDN): Promise<WholeOrg> {
+    // will mute param from FetchOU as FetchNestOU
+    const convertToNextOU = async (baseOUs: FetchOU[]) => {
+      await Promise.all(baseOUs.map(async (baseOU) => {
+        const baseNestOU = baseOU as FetchNestOU
+
+        const childOUs = await this.fetchOUs(ouFilter, baseOU.dn, SearchScope.one)
+        await convertToNextOU(childOUs)
+        baseNestOU.childOUs = childOUs as FetchNestOU[]
+
+        baseNestOU.users = await this.fetchUsers(userFilter, baseOU.dn, SearchScope.one)
+      }))
+    }
+
+    const wholeOrg: WholeOrg = { ous: [], usersNotInOU: [] }
+    const baseOU = (await this.fetchOUs(ouFilter, baseDN, SearchScope.base))[0]
+    if (baseOU != null) {
+      await convertToNextOU([baseOU])
+      wholeOrg.ous.push(baseOU as FetchNestOU)
+    } else {
+      const baseOUs = await this.fetchOUs(ouFilter, baseDN, SearchScope.one)
+      await convertToNextOU(baseOUs)
+      wholeOrg.ous.push(...baseOUs as FetchNestOU[])
+      wholeOrg.usersNotInOU.push(...await this.fetchUsers(userFilter, baseDN, SearchScope.one))
+    }
+
+    return wholeOrg
+  }
+
+  /**
+   * 从 AD 接收对象更新通知
    * see https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/f14f3610-ee22-4d07-8a24-1bf1466cba5f
    * @param baseDN 默认是全局 baseDN
    * @param filterStr 过滤通知的对象属性，默认 (objectClass=*)
    */
-  async subChangeNotificationForMSAD(baseDN: string = this.baseDN, filterStr = '(objectClass=*)'): Promise<MSADObjChangeNotifier> {
+  async subChangeNotificationForMSAD(filterStr = '(objectClass=*)', baseDN: string = this.baseDN): Promise<ADObjChangeNotifier> {
+    if (this.dsType !== DirectoryServiceName.ActiveDirectory) {
+      throw new Error(`just work with ${DirectoryServiceName.ActiveDirectory}`)
+    }
     const client = await this.client
-    const msADServerNotificationControl = new ldapjs['Control']({
+    const ADServerNotificationControl = new ldapjs['Control']({
       type: '1.2.840.113556.1.4.528',
       criticality: false,
     })
-    const notifier = new MSADObjChangeNotifier(client)
+    const notifier = new ADObjChangeNotifier(client)
     client.search(baseDN, {
       scope: SearchScope.sub,
-      attributes: NotifyObjectKeys as any,
+      attributes: searchAttrKeys as any,
       filter: '(objectClass=*)',
-    }, msADServerNotificationControl, (err, response) => {
+    }, ADServerNotificationControl, (err, response) => {
       if (err) {
         notifier.emit('end', err)
         return
       }
 
       const filter = ldapjs.parseFilter(filterStr)
-      response.on('searchEntry', ({ messageID, object, controls }) => {
+      response.on('searchEntry', ({ messageID, object: entryObject }) => {
         notifier.messageID = messageID
         if (notifier.stopped) {
           notifier.stop()
           return
         }
+        const object = { ...entryObject } as unknown as FetchUser
         if (filter.matches(object)) {
+          this.fillId(object)
           notifier.emit('change', object)
         }
       })
       response.on('error', (err) => {
-        this.logError('search error', err);
+        this.logError('ad change notification error', err);
         notifier.emit('error', err)
       });
       response.on('end', (result) => {
