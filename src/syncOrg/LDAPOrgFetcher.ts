@@ -292,9 +292,9 @@ export class LDAPOrgFetcher {
    * 从 AD 接收对象更新通知
    * see https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/f14f3610-ee22-4d07-8a24-1bf1466cba5f
    * @param baseDN 默认是全局 baseDN
-   * @param filterStr 过滤通知的对象属性，默认 (objectClass=*)
+   * @param filterStr 过滤通知的对象属性，默认无
    */
-  async subChangeNotificationForMSAD(filterStr = '(objectClass=*)', baseDN: string = this.baseDN): Promise<ADObjChangeNotifier> {
+  async subChangeNotificationForMSAD(filterStr = null, baseDN: string = this.baseDN): Promise<ADObjChangeNotifier> {
     if (this.dsType !== DirectoryServiceName.ActiveDirectory) {
       throw new Error(`just work with ${DirectoryServiceName.ActiveDirectory}`)
     }
@@ -314,7 +314,6 @@ export class LDAPOrgFetcher {
         return
       }
 
-      const filter = ldapjs.parseFilter(filterStr)
       response.on('searchEntry', ({ messageID, object: entryObject }) => {
         notifier.messageID = messageID
         if (notifier.stopped) {
@@ -322,7 +321,7 @@ export class LDAPOrgFetcher {
           return
         }
         const object = { ...entryObject } as unknown as FetchUser
-        if (filter.matches(object)) {
+        if (filterStr ? ldapjs.parseFilter(filterStr).matches(object) : true) {
           this.fillId(object)
           notifier.emit('change', object)
         }
