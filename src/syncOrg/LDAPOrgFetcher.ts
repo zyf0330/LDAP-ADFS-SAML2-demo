@@ -75,25 +75,20 @@ const SearchFilters: Record<'default' | keyof typeof DirectoryServiceName, Parti
 
 }
 
-const searchAttrKeys = <const>['dn', 'ou', 'cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName', 'objectGUID'];
+const searchAttrKeys = <const>['dn', 'ou', 'cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName'];
 type SearchObject = Partial<Record<typeof searchAttrKeys[number], string>>
 
 interface FetchObject extends SearchObject {
-  id: string
   dn: string
   type: 'user' | 'ou'
 }
 
 interface FetchUser extends FetchObject {
-  id: string
-  dn: string
   type: 'user'
   cn: string
 }
 
 interface FetchOU extends FetchObject {
-  id: string
-  dn: string
   type: 'ou'
   ou: string
 }
@@ -192,22 +187,6 @@ export class LDAPOrgFetcher {
     })
   }
 
-  static stringifyADGUID(guid) {
-    return Buffer.from(guid).toString('base64')
-  }
-
-  private fillId(object: FetchObject) {
-    let id
-    switch (this.dsType) {
-      case DirectoryServiceName.ActiveDirectory:
-        id = object.objectGUID
-        break
-      default:
-        id = object.dn
-    }
-    object.id = id
-  }
-
   async fetch(filter: string, baseDN = this.baseDN, scope = SearchScope.sub): Promise<FetchObject[]> {
     const client = await this.client
     return new Promise((res, rej) => {
@@ -226,10 +205,6 @@ export class LDAPOrgFetcher {
         response.on('searchEntry', ({ object: entryObject }) => {
           let object = { ...entryObject } as unknown as FetchObject
           delete object['controls']
-          if (typeof object.objectGUID === 'string') {
-            object.objectGUID = LDAPOrgFetcher.stringifyADGUID(object.objectGUID)
-          }
-          this.fillId(object)
           objs.push(object)
         })
         response.on('error', (err) => {
@@ -322,7 +297,6 @@ export class LDAPOrgFetcher {
         }
         const object = { ...entryObject } as unknown as FetchUser
         if (filterStr ? ldapjs.parseFilter(filterStr).matches(object) : true) {
-          this.fillId(object)
           notifier.emit('change', object)
         }
       })
