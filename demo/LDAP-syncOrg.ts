@@ -3,8 +3,8 @@
  *
  */
 
-import { LDAPOrgFetcher } from '../src/'
-import { ad } from './accounts';
+import { LDAPOrgFetcher, DirectoryServiceName } from '../src/'
+import { ad, openLDAP } from './accounts';
 
 (async () => {
   const adFetcher = new LDAPOrgFetcher({
@@ -16,11 +16,19 @@ import { ad } from './accounts';
   console.log('=============== Active Directory ===============')
   // const ous = await adFetcher.fetchOUs()
   // console.log('ous', ous)
-  // const users = await adFetcher.fetchUsers()
-  // console.log('users', users)
-  const result = await adFetcher.fetchWholeOrg()
-  console.log('whole Org')
-  console.dir(result, { depth: 10 })
+  const users = await adFetcher.fetchUsers()
+  console.log('users', users)
+  const pageEmitter = await adFetcher.fetchUsersPaged()
+  pageEmitter.on('page', (users, nextPage) => {
+    console.log('users', users)
+    nextPage()
+  })
+  pageEmitter.once('end', (users) => {
+    console.log('page end', users)
+  })
+  // const result = await adFetcher.fetchWholeOrg()
+  // console.log('whole Org')
+  // console.dir(result, { depth: 10 })
 
   // const notifier = await adFetcher.subChangeNotificationForMSAD()
   // notifier.on('change', async (object) => {
@@ -34,7 +42,7 @@ import { ad } from './accounts';
   // notifier.on('end', console.log.bind(null, 'end'))
   // await notifier.stop()
 
-  await adFetcher.release()
+  // await adFetcher.release()
 })().then(() => {
   return (async () => {
     /*    console.log('=============== OpenLDAP ===============')

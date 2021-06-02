@@ -33,10 +33,10 @@ import * as ldapjs from 'ldapjs'
 import { createClient, Error, Client, parseDN, parseFilter, PresenceFilter, LDAPResult } from 'ldapjs'
 import { EventEmitter } from 'events'
 
-interface PageEmitter extends EventEmitter {
-  on(event: 'page', listener: (objs: FetchObject[], nextPage: () => void) => void): this
+interface PageEmitter<T extends FetchObject> extends EventEmitter {
+  on(event: 'page', listener: (objs: T[], nextPage: () => void) => void): this
 
-  once(event: 'end', listener: (objs: FetchObject[]) => void): this
+  once(event: 'end', listener: (objs: T[]) => void): this
 }
 
 export enum SearchScope {
@@ -195,7 +195,7 @@ export class LDAPOrgFetcher {
     })
   }
 
-  async fetch(filter: string, baseDN = this.baseDN, scope = SearchScope.sub, { paged = false } = {}): Promise<FetchObject[] | PageEmitter> {
+  async fetch<T extends FetchObject>(filter: string, baseDN = this.baseDN, scope = SearchScope.sub, { paged = false } = {}): Promise<T[] | PageEmitter<T>> {
     const client = await this.client
     return new Promise((res, rej) => {
       client.search(baseDN, {
@@ -210,7 +210,7 @@ export class LDAPOrgFetcher {
         }
         const objs = []
         response.on('searchEntry', ({ object: entryObject }) => {
-          const object = { ...entryObject } as unknown as FetchObject
+          const object = { ...entryObject } as unknown as T
           delete object['controls']
           objs.push(object)
         })
@@ -227,7 +227,7 @@ export class LDAPOrgFetcher {
         });
 
         if (paged) {
-          const pageEmitter = new EventEmitter()
+          const pageEmitter: PageEmitter<T> = new EventEmitter()
           response.on('page', (result, cb) => {
             if (result instanceof LDAPResult) {
               pageEmitter.emit('page', objs, cb)
@@ -264,7 +264,7 @@ export class LDAPOrgFetcher {
   }
 
   async fetchUsersPaged(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
-    return (await this.fetch(filter, baseDN, scope, { paged: true })) as PageEmitter
+    return (await this.fetch(filter, baseDN, scope, { paged: true })) as PageEmitter<FetchUser>
   }
 
   /**
