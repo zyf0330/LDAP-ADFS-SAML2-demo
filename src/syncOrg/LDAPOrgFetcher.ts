@@ -30,8 +30,14 @@
 // }
 
 import * as ldapjs from 'ldapjs'
-import { createClient, Error, Client, parseDN, parseFilter, PresenceFilter } from 'ldapjs'
+import { createClient, Error, Client, parseDN, parseFilter, PresenceFilter, LDAPResult } from 'ldapjs'
 import { EventEmitter } from 'events'
+
+interface PageEmitter extends EventEmitter {
+  on(event: 'page', listener: (objs: FetchObject[], nextPage: () => void) => void): this
+
+  once(event: 'end', listener: (objs: FetchObject[]) => void): this
+}
 
 export enum SearchScope {
   base = 'base',
@@ -189,20 +195,19 @@ export class LDAPOrgFetcher {
     })
   }
 
-  async fetch(filter: string, baseDN = this.baseDN, scope = SearchScope.sub): Promise<FetchObject[]> {
+  async fetch(filter: string, baseDN = this.baseDN, scope = SearchScope.sub, { paged = false } = {}): Promise<FetchObject[] | PageEmitter> {
     const client = await this.client
     return new Promise((res, rej) => {
       client.search(baseDN, {
         scope,
         attributes: searchAttrKeys as any,
         filter,
-        paged: true,
+        paged: { pagePause: paged },
       }, (err, response) => {
         if (err) {
           rej(err)
           return
         }
-
         const objs = []
         response.on('searchEntry', ({ object: entryObject }) => {
           const object = { ...entryObject } as unknown as FetchObject
@@ -216,14 +221,29 @@ export class LDAPOrgFetcher {
           if (result?.status !== 0) {
             console.error('search end', result.status, result.errorMessage)
           }
-          res(objs)
+          if (!paged) {
+            res(objs)
+          }
         });
+
+        if (paged) {
+          const pageEmitter = new EventEmitter()
+          response.on('page', (result, cb) => {
+            if (result instanceof LDAPResult) {
+              pageEmitter.emit('page', objs, cb)
+              objs.length = 0
+            } else {
+              pageEmitter.emit('end', objs)
+            }
+          })
+          res(pageEmitter)
+        }
       })
     })
   }
 
   async fetchOUs(filter: string = this.searchFilter.ou, baseDN = this.baseDN, scope = SearchScope.sub) {
-    const ous = (await this.fetch(filter, baseDN, scope)) as unknown as FetchOU[]
+    const ous = (await this.fetch(filter, baseDN, scope)) as FetchOU[]
     ous.forEach((ou) => {
       const filterOU = new PresenceFilter({ attribute: 'ou' });
       const dn = parseDN(ou.dn)
@@ -240,7 +260,11 @@ export class LDAPOrgFetcher {
   }
 
   async fetchUsers(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
-    return (await this.fetch(filter, baseDN, scope)) as unknown as FetchUser[]
+    return (await this.fetch(filter, baseDN, scope)) as FetchUser[]
+  }
+
+  async fetchUsersPaged(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
+    return (await this.fetch(filter, baseDN, scope, { paged: true })) as PageEmitter
   }
 
   /**
