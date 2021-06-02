@@ -30,7 +30,7 @@
 // }
 
 import * as ldapjs from 'ldapjs'
-import { createClient, Error, Client } from 'ldapjs'
+import { createClient, Error, Client, parseDN, parseFilter, PresenceFilter } from 'ldapjs'
 import { EventEmitter } from 'events'
 
 export enum SearchScope {
@@ -75,22 +75,24 @@ const SearchFilters: Record<'default' | keyof typeof DirectoryServiceName, Parti
 
 }
 
-const searchAttrKeys = <const>['dn', 'ou', 'cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName'];
-type SearchObject = Partial<Record<typeof searchAttrKeys[number], string>>
+const userAttrKeys = <const>['cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName']
+const ouAttrKeys = <const>['ou']
+const searchAttrKeys = <const>['dn', ...ouAttrKeys, ...userAttrKeys];
 
-interface FetchObject extends SearchObject {
+interface FetchObject {
   dn: string
   type: 'user' | 'ou'
 }
 
-interface FetchUser extends FetchObject {
+interface FetchUser extends FetchObject, Record<typeof userAttrKeys[number], string> {
   type: 'user'
   cn: string
 }
 
-interface FetchOU extends FetchObject {
+interface FetchOU extends FetchObject, Record<typeof ouAttrKeys[number], string | any> {
   type: 'ou'
   ou: string
+  parentOUDN?: string
 }
 
 interface FetchNestOU extends FetchOU {
@@ -203,7 +205,7 @@ export class LDAPOrgFetcher {
 
         const objs = []
         response.on('searchEntry', ({ object: entryObject }) => {
-          let object = { ...entryObject } as unknown as FetchObject
+          const object = { ...entryObject } as unknown as FetchObject
           delete object['controls']
           objs.push(object)
         })
@@ -221,11 +223,24 @@ export class LDAPOrgFetcher {
   }
 
   async fetchOUs(filter: string = this.searchFilter.ou, baseDN = this.baseDN, scope = SearchScope.sub) {
-    return (await this.fetch(filter, baseDN, scope)) as FetchOU[]
+    const ous = (await this.fetch(filter, baseDN, scope)) as unknown as FetchOU[]
+    ous.forEach((ou) => {
+      const filterOU = new PresenceFilter({ attribute: 'ou' });
+      const dn = parseDN(ou.dn)
+      dn.shift() // remove ou self
+      while (dn.length > 0) {
+        if (filterOU.matches(dn.rdns[0].attrs)) {
+          ou.parentOUDN = dn.format({ keepCase: true, skipSpace: true })
+          break
+        }
+        dn.shift()
+      }
+    })
+    return ous
   }
 
   async fetchUsers(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
-    return (await this.fetch(filter, baseDN, scope)) as FetchUser[]
+    return (await this.fetch(filter, baseDN, scope)) as unknown as FetchUser[]
   }
 
   /**
@@ -296,7 +311,7 @@ export class LDAPOrgFetcher {
           return
         }
         const object = { ...entryObject } as unknown as FetchUser
-        if (filterStr ? ldapjs.parseFilter(filterStr).matches(object) : true) {
+        if (filterStr ? parseFilter(filterStr).matches(object) : true) {
           notifier.emit('change', object)
         }
       })
