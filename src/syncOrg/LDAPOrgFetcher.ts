@@ -93,6 +93,7 @@ interface FetchObject {
 interface FetchUser extends FetchObject, Record<typeof userAttrKeys[number], string> {
   type: 'user'
   cn: string
+  ouDN?: string
 }
 
 interface FetchOU extends FetchObject, Record<typeof ouAttrKeys[number], string | any> {
@@ -195,7 +196,8 @@ export class LDAPOrgFetcher {
     })
   }
 
-  async fetch<T extends FetchObject>(filter: string, baseDN = this.baseDN, scope = SearchScope.sub, { paged = false } = {}): Promise<T[] | PageEmitter<T>> {
+  async fetch<T extends FetchObject>(fetchOption: { filter: string, baseDN: string, scope: SearchScope, type: T['type'] }, { paged = false } = {}): Promise<T[] | PageEmitter<T>> {
+    const { filter = '', baseDN = this.baseDN, scope = SearchScope.sub, type = 'user' } = fetchOption || {}
     const client = await this.client
     return new Promise((res, rej) => {
       client.search(baseDN, {
@@ -212,6 +214,16 @@ export class LDAPOrgFetcher {
         response.on('searchEntry', ({ object: entryObject }) => {
           const object = { ...entryObject } as unknown as T
           delete object['controls']
+          object.type = type
+
+          if (type === 'user') {
+            const user = object as unknown as FetchUser
+            user.ouDN = this.getParentOUFromDN(user.dn)
+          } else if (type === 'ou') {
+            const ou = object as unknown as FetchOU
+            ou.parentOUDN = this.getParentOUFromDN(ou.dn)
+          }
+
           objs.push(object)
         })
         response.on('error', (err) => {
@@ -242,29 +254,34 @@ export class LDAPOrgFetcher {
     })
   }
 
-  async fetchOUs(filter: string = this.searchFilter.ou, baseDN = this.baseDN, scope = SearchScope.sub) {
-    const ous = (await this.fetch(filter, baseDN, scope)) as FetchOU[]
-    ous.forEach((ou) => {
-      const filterOU = new PresenceFilter({ attribute: 'ou' });
-      const dn = parseDN(ou.dn)
-      dn.shift() // remove ou self
-      while (dn.length > 0) {
-        if (filterOU.matches(dn.rdns[0].attrs)) {
-          ou.parentOUDN = dn.format({ keepCase: true, skipSpace: true })
-          break
-        }
-        dn.shift()
+  private getParentOUFromDN(dn: string) {
+    const dnObj = parseDN(dn)
+    const filterOU = new PresenceFilter({ attribute: 'ou' });
+    dnObj.shift() // remove ou self
+    while (dnObj.length > 0) {
+      if (filterOU.matches(dnObj.rdns[0].attrs)) {
+        return dnObj.format({ keepCase: true, skipSpace: true })
       }
-    })
-    return ous
+      dnObj.shift()
+    }
+    return undefined
+  }
+
+  async fetchOUs(filter: string = this.searchFilter.ou, baseDN = this.baseDN, scope = SearchScope.sub) {
+    return (await this.fetch<FetchOU>({ filter, baseDN, scope, type: 'ou' })) as FetchOU[]
   }
 
   async fetchUsers(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
-    return (await this.fetch(filter, baseDN, scope)) as FetchUser[]
+    return (await this.fetch<FetchUser>({ filter, baseDN, scope, type: 'user' })) as FetchUser[]
   }
 
   async fetchUsersPaged(filter: string = this.searchFilter.user, baseDN = this.baseDN, scope = SearchScope.sub) {
-    return (await this.fetch(filter, baseDN, scope, { paged: true })) as PageEmitter<FetchUser>
+    return (await this.fetch<FetchUser>({
+      filter,
+      baseDN,
+      scope,
+      type: 'user',
+    }, { paged: true })) as PageEmitter<FetchUser>
   }
 
   /**
