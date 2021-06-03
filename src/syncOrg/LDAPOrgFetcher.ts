@@ -230,7 +230,7 @@ export class LDAPOrgFetcher {
           const pageEmitter: PageEmitter<T> = new EventEmitter()
           response.on('page', (result, cb) => {
             if (result instanceof LDAPResult) {
-              pageEmitter.emit('page', objs, cb)
+              pageEmitter.emit('page', objs.slice(0), cb)
               objs.length = 0
             } else {
               pageEmitter.emit('end', objs)
