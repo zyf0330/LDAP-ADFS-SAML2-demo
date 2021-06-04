@@ -1,25 +1,26 @@
 'use strict'
 
-import { IdentityProvider, ServiceProvider, SAMLAssertResponse } from 'saml2-js'
+import { IdentityProvider, ServiceProvider, Constants } from 'samlify'
+import { wording } from 'samlify/build/src/urn'
+
+const binding = wording.binding
 
 /**
  *
  */
 
-type SPOptions = {
-  entityId: string
-  privateKey: string
-  certificate: string
-  assertEndpoint: string
-}
-type IDPOptions = {
-  ssoLoginUrl: string,
-  ssoLogoutUrl: string,
-  certificate: string,
-}
 type SAML2Options = {
   baseUrl: string,
-  assertPath: string,
+  assert: {
+    login: {
+      path: string,
+      method: 'POST' | 'GET',
+    },
+    logout?: {
+      path: string,
+      method: 'POST' | 'GET',
+    },
+  },
   spCertificate: string,
   spPrivateKey: string,
   idpCertificate: string,
@@ -29,63 +30,80 @@ type SAML2Options = {
 }
 
 export class SAML2Authenticator {
-  idpOptions: IDPOptions
-  sp: ServiceProvider
+  sp: ReturnType<typeof ServiceProvider>
+  idp: ReturnType<typeof IdentityProvider>
 
-  spOptions: SPOptions
-  idp: IdentityProvider
+  loginOption
+  logoutOption
 
   requireSessionIndex: boolean
 
   /**
-   * 在使用时构造即可
+   * 在使用时构造即可 // TODO
    * @param options.idpSSOLogoutUrl 如果为空使用 idpSSOUrl
    * @param options.requireSessionId 是否要求处理 sso 的 session id
    */
   constructor(options: SAML2Options) {
-    const spOptions = this.spOptions = {
-      entityId: options.baseUrl,
-      assertEndpoint: `${options.baseUrl}${options.assertPath}`,
-      certificate: options.spCertificate,
-      privateKey: options.spPrivateKey,
-    }
-    const idpOptions = this.idpOptions = {
-      ssoLoginUrl: options.idpSSOUrl,
-      ssoLogoutUrl: options.idpSSOLogoutUrl ?? options.idpSSOUrl,
-      certificate: options.idpCertificate,
-    }
+    options.assert.logout = options.assert.logout || options.assert.login
 
     this.requireSessionIndex = options.requireSessionIndex ?? true
+    this.loginOption = {
+      // TODO samlify 现在不支持 HTTP-Redirect Binding
+      binding: options.assert.login.method === 'GET' ? binding.redirect : binding.post,
+      assertUrl: `${options.baseUrl}${options.assert.login.path}`,
+    }
+    this.logoutOption = {
+      binding: options.assert.logout.method === 'GET' ? binding.redirect : binding.post,
+      assertUrl: `${options.baseUrl}${options.assert.logout.path}`,
+    }
 
-    this.sp = new ServiceProvider({
-      entity_id: spOptions.entityId,
-      private_key: spOptions.privateKey,
-      certificate: spOptions.certificate,
-      assert_endpoint: spOptions.assertEndpoint,
-      sign_get_request: true,
+    this.sp = ServiceProvider({
+      nameIDFormat: ['urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified'],
+      entityID: options.baseUrl,
+      privateKey: options.spPrivateKey,
+      signingCert: options.spCertificate,
+      encryptCert: options.spCertificate,
+      authnRequestsSigned: true,
+      wantAssertionsSigned: true,
+      wantLogoutRequestSigned: true,
+      wantLogoutResponseSigned: true,
+      assertionConsumerService: [{
+        isDefault: true,
+        Binding: this.loginOption.binding === binding.redirect ? Constants.BindingNamespace.Redirect : Constants.BindingNamespace.Post,
+        Location: this.loginOption.assertUrl,
+      }],
+      singleLogoutService: [{
+        isDefault: true,
+        Binding: this.logoutOption.binding === binding.redirect ? Constants.BindingNamespace.Redirect : Constants.BindingNamespace.Post,
+        Location: this.logoutOption.assertUrl,
+      }],
     })
 
-    this.idp = new IdentityProvider({
-      sso_login_url: idpOptions.ssoLoginUrl,
-      sso_logout_url: idpOptions.ssoLogoutUrl,
-      certificates: idpOptions.certificate,
-      sign_get_request: true,
+    this.idp = IdentityProvider({
+      signingCert: options.idpCertificate,
+      encryptCert: options.idpCertificate,
+      wantAuthnRequestsSigned: true,
+      wantLogoutRequestSigned: true,
+      wantLogoutResponseSigned: true,
+      wantLogoutRequestSignedResponseSigned: true,
+      singleSignOnService: [{
+        isDefault: true,
+        Binding: Constants.BindingNamespace.Redirect,
+        Location: options.idpSSOUrl,
+      }],
+      singleLogoutService: [{
+        Binding: Constants.BindingNamespace.Redirect,
+        Location: options.idpSSOLogoutUrl || options.idpSSOUrl,
+      }],
     })
   }
 
   /**
    * 返回登录链接，用于客户端请求 SAML2 IdentityProvider 来登录
    */
-  async getLoginRequestUrl(): Promise<string> {
-    return new Promise((res, rej) => {
-      this.sp.create_login_request_url(this.idp, {}, (err, loginUrl, requestId) => {
-        if (err) {
-          rej(err)
-          return
-        }
-        res(loginUrl)
-      })
-    })
+  getLoginRequestUrl(): string {
+    const { context } = this.sp.createLoginRequest(this.idp)
+    return context
   }
 
   /**
@@ -93,67 +111,39 @@ export class SAML2Authenticator {
    * @param nameId 用户登陆名
    * @param sessionIndex sessionIndex 为用户登录在 idp 的 session id
    */
-  async getLogoutRequestUrl(nameId: string, sessionIndex?: string): Promise<string> {
-    return new Promise((res, rej) => {
-      this.sp.create_logout_request_url(this.idp, {
-        name_id: nameId,
-        session_index: this.requireSessionIndex ? sessionIndex : undefined,
-
-      }, (err, logoutUrl) => {
-        if (err) {
-          rej(err)
-          return
-        }
-        res(logoutUrl)
-      })
+  getLogoutRequestUrl(nameId: string, sessionIndex?: string): string {
+    const { context } = this.sp.createLogoutRequest(this.idp, binding.redirect, {
+      logoutNameID: nameId,
+      sessionIndex: this.requireSessionIndex ? sessionIndex : undefined,
     })
+    return context
   }
 
   /**
    * 用于 idp 登录回调
    */
-  async assertForLogin(httpMethod: 'POST' | 'GET', SAMLResponse: string): Promise<{ nameId: string, sessionIndex?: string, email?: string, attributes?: Record<string, string | string[]> }> {
-    const response = await this.assert({ SAMLResponse }, httpMethod === 'POST')
-    if (response.type !== 'authn_response') {
-      throw new Error('no login assert')
-    }
-    const { name_id: nameId, session_index: sessionIndex, attributes } = response.user
-    return { nameId, sessionIndex, email: response.user['email'], attributes }
+  async assertForLogin(SAMLResponse: string): Promise<{ nameId: string, sessionIndex?: string, email?: string, attributes?: Record<string, string | string[]> }> {
+    const request = this.loginOption.binding === binding.redirect ? { query: { SAMLResponse } } : { body: { SAMLResponse } }
+
+    const { samlContent, extract } = await this.sp.parseLoginResponse(this.idp, this.loginOption.binding, request)
+    console.log(samlContent, extract)
+    const nameId = '', sessionIndex = ''
+    const email = ''
+    const attributes = {}
+    return { nameId, sessionIndex, email, attributes }
   }
 
   /**
    * 用于 idp 登出回调
    */
-  async assertForLogout(httpMethod: 'POST' | 'GET', SAMLResponse: string) {
-    const response = await this.assert({ SAMLResponse }, httpMethod === 'POST')
-    if (response.type !== 'logout_response') {
-      throw new Error('no logout assert')
-    }
-  }
-
-  /**
-   * 如果有其他 SAML 断言需求，使用该方法
-   * @param isPostOrRedirect post_assert if true, otherwise redirect_assert
-   */
-  async assert({
-                 SAMLRequest,
-                 SAMLResponse,
-               }: { SAMLRequest?: string, SAMLResponse?: string }, isPostOrRedirect = true): Promise<SAMLAssertResponse> {
-    return new Promise((res, rej) => {
-      this.sp[isPostOrRedirect ? 'post_assert' : 'redirect_assert'](this.idp, {
-        request_body: { SAMLRequest, SAMLResponse },
-        require_session_index: this.requireSessionIndex,
-      }, (err, response) => {
-        if (err) {
-          rej(err)
-          return
-        }
-        res(response)
-      })
-    })
+  async assertForLogout(SAMLResponse: string) {
+    // const response = await this.assert({ SAMLResponse }, httpMethod === 'POST')
+    // if (response.type !== 'logout_response') {
+    //   throw new Error('no logout assert')
+    // }
   }
 
   getMetadataXML() {
-    return this.sp.create_metadata()
+    return this.sp.getMetadata()
   }
 }

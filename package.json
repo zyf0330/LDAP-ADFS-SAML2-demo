@@ -6,7 +6,8 @@
   "dependencies": {
     "formidable": "^1.2.2",
     "ldapjs": "^2.2.4",
-    "saml2-js": "^3.0.1"
+    "saml2-js": "^3.0.1",
+    "samlify": "^2.7.6"
   },
   "devDependencies": {
     "@types/ldapjs": "^1.0.10",
