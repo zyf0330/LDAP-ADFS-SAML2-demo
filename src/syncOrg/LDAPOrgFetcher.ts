@@ -228,6 +228,7 @@ export class LDAPOrgFetcher {
         })
         response.on('error', (err) => {
           this.logError('search error', err);
+          rej(err)
         });
         response.on('end', (result) => {
           if (result?.status !== 0) {
