@@ -12,23 +12,32 @@ import { ad, openLDAP } from './accounts';
     adminDN: ad.adminDN,
     adminPassword: ad.adminPassword,
     baseDN: ad.base,
-  });
-  console.log('=============== Active Directory ===============')
-  // const ous = await adFetcher.fetchOUs()
-  // console.log('ous', ous)
-  const users = await adFetcher.fetchUsers()
-  console.log('users', users)
-  const pageEmitter = await adFetcher.fetchUsersPaged()
-  pageEmitter.on('page', (users, nextPage) => {
+    tlsOptions: ad.certificate && {
+      ca: ad.certificate,
+      cert: ad.certificate,
+    },
+  })
+  try {
+
+    console.log('=============== Active Directory ===============')
+    const ous = await adFetcher.fetchOUs()
+    console.log('ous', ous)
+    const users = await adFetcher.fetchUsers()
     console.log('users', users)
-    nextPage()
-  })
-  pageEmitter.once('end', (users) => {
-    console.log('page end', users)
-  })
-  // const result = await adFetcher.fetchWholeOrg()
-  // console.log('whole Org')
-  // console.dir(result, { depth: 10 })
+    // const pageEmitter = await adFetcher.fetchUsersPaged()
+    // pageEmitter.on('page', (users, nextPage) => {
+    //   console.log('users', users)
+    //   nextPage()
+    // })
+    // pageEmitter.once('end', (users) => {
+    //   console.log('page end', users)
+    // })
+    // const result = await adFetcher.fetchWholeOrg()
+    // console.log('whole Org')
+    // console.dir(result, { depth: 10 })
+  } catch (e) {
+    console.error('capture error:', e)
+  }
 
   // const notifier = await adFetcher.subChangeNotificationForMSAD()
   // notifier.on('change', async (object) => {

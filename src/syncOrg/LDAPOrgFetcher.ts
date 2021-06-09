@@ -169,6 +169,7 @@ export class LDAPOrgFetcher {
     this.client = Promise.resolve().then(() => {
       const client = createClient({
         url: `${url}/${this.baseDN}`,
+        timeout: 3000,
         tlsOptions,
       })
       return new Promise((res, rej) => {
