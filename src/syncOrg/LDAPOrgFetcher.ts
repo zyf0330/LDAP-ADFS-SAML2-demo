@@ -81,7 +81,7 @@ const SearchFilters: Record<'default' | keyof typeof DirectoryServiceName, Parti
 
 }
 
-const userAttrKeys = <const>['cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName']
+const userAttrKeys = <const>['cn', 'sn', 'givenName', 'displayName', 'mobile', 'mail', 'sAMAccountName', 'userPrincipalName']
 const ouAttrKeys = <const>['ou']
 const searchAttrKeys = <const>['dn', ...ouAttrKeys, ...userAttrKeys];
 
@@ -165,11 +165,12 @@ export class LDAPOrgFetcher {
               }: { url: string, adminDN: string, adminPassword: string, tlsOptions?: any, baseDN?: string, dsType?: DirectoryServiceName }) {
     this.baseDN = baseDN
     this.dsType = dsType
-    this.searchFilter = Object.assign(SearchFilters.default, SearchFilters[this.dsType])
+    this.searchFilter = { ...SearchFilters.default, ...SearchFilters[this.dsType] }
     this.client = Promise.resolve().then(() => {
       const client = createClient({
         url: `${url}/${this.baseDN}`,
         timeout: 3000,
+        connectTimeout: 5000,
         tlsOptions,
       })
       return new Promise((res, rej) => {
